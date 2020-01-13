@@ -74,7 +74,7 @@ def run(memdump, options):
     module = "-" if "module" not in options else options["module"].lower()
     output = "dump_mem.xx" if "output" not in options else "data/local/tmp/" + options["output"]
 
-    args = ("%s %d 0x%x 0x%x %s %s" % (process, pid, start, end, module, output))
+    args = ("%s %d %s %s %s %s" % (process, pid, str(start), str(end), module, output))
     command = ("/data/local/tmp/%s %s" % (memdump, args))
     print("[*] Run script with command: %s" % command)
     os.system("adb shell su -c '%s'" % command)
