@@ -1,0 +1,390 @@
+//
+//  main.cpp
+//  SignatureCheckOSX 
+//
+//  Created by Elviss Strazdins on 30.05.2014.
+//  Copyright (c) 2014 Elviss. All rights reserved.
+//  이게 그나마 정상적일거 같음. 
+//  64bit 이던 32bit던 차이 없나?
+//
+#include <mach-o/arch.h>
+#include <mach-o/loader.h>
+#include <mach-o/fat.h>
+
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#include <openssl/x509.h>
+#include <openssl/pkcs7.h>
+
+// 퍼블릭 키 어케 떼왔냐?? >> 이거 codesignature에도 있으면 비교 해보면 되겠네.
+// BlobWrapper 의 CMS 쪽.. 에서 띈건가?
+static const unsigned char PUBLIC_KEY[] = {0x30, 0x82, 0x01, 0x0a, 0x02, 0x82, 0x01, 0x01, 0x00, 0xc0, 0x3e, 0x43, 0xd4, 0x54, 0x51, 0x43, 0xe7, 0xc4, 0xd9, 0xd6, 0x07, 0xcb, 0x63, 0xcc, 0x4e, 0x8f, 0x77, 0x07, 0x65, 0x22, 0xaf, 0x3d, 0x79, 0xae, 0x3e, 0x9e, 0x0a, 0x72, 0x5d, 0x86, 0x99, 0x56, 0x23, 0xa5, 0xf9, 0xad, 0xf7, 0xb0, 0x9e, 0xf8, 0x1b, 0x53, 0x08, 0x3e, 0x22, 0x30, 0x66, 0x16, 0x2a, 0x90, 0xf1, 0x6d, 0x2d, 0x35, 0x6e, 0xea, 0x18, 0xa6, 0x36, 0x52, 0x3c, 0x11, 0x0a, 0x34, 0x9a, 0xe3, 0x53, 0x7b, 0x86, 0x9e, 0xa9, 0xc9, 0x18, 0x42, 0x31, 0x0d, 0xb6, 0xe7, 0x03, 0xb3, 0x77, 0x09, 0xc6, 0xff, 0x73, 0x59, 0xa4, 0xdf, 0xbe, 0x3e, 0x89, 0x79, 0x06, 0x22, 0x44, 0x9d, 0xf2, 0x26, 0xab, 0x29, 0x44, 0xe2, 0xb8, 0xe8, 0x2d, 0x42, 0x21, 0xc0, 0x6c, 0x53, 0xee, 0x57, 0x93, 0xec, 0xdd, 0x2c, 0xb8, 0xb4, 0x72, 0xdd, 0x5f, 0xf5, 0x98, 0x3e, 0x14, 0x9e, 0x51, 0x8f, 0x4a, 0xa9, 0x4c, 0x92, 0x00, 0x16, 0x18, 0xf7, 0x76, 0x5f, 0xa6, 0x54, 0xc2, 0x48, 0xce, 0xcd, 0xbd, 0xff, 0xf9, 0xe2, 0x1a, 0xc2, 0xe8, 0x11, 0xf8, 0xbf, 0x9e, 0x2a, 0xd1, 0x94, 0xee, 0x7d, 0x1b, 0xb3, 0x88, 0xa5, 0xa0, 0x6b, 0xfb, 0xd9, 0x4a, 0x09, 0xfa, 0x84, 0x18, 0x85, 0xac, 0x0b, 0xbc, 0xdc, 0xf3, 0xbf, 0xae, 0xaf, 0xfb, 0xc2, 0x98, 0x67, 0xd7, 0xbd, 0xf0, 0xc6, 0xe0, 0xa4, 0xa0, 0xb2, 0x67, 0x9e, 0x53, 0xea, 0x63, 0x35, 0x1d, 0xf7, 0x4e, 0x13, 0xee, 0xd9, 0x11, 0x61, 0xd0, 0x15, 0xa2, 0xf6, 0x70, 0x5b, 0x82, 0x73, 0xb0, 0xf0, 0xcf, 0x88, 0xd7, 0x90, 0xe8, 0xda, 0x54, 0x72, 0x68, 0xce, 0x51, 0x67, 0x1a, 0xc8, 0x03, 0xc9, 0x6c, 0x0c, 0x11, 0x8d, 0xc4, 0xf2, 0x0f, 0xaa, 0xf6, 0x28, 0x27, 0xc5, 0xab, 0xb2, 0xa1, 0x38, 0x30, 0xfa, 0xa3, 0x2b, 0x13, 0x02, 0x03, 0x01, 0x00, 0x01};
+
+// 엔디안 변경하는 함수 인듯.. 
+// Big endian을 host의 엔디안에 맞추어 수정해줌.
+// cpu는 little endian 쓰니까, 바이트 역순으로 변경해줄듯..
+// 이거 dyld에서 이렇게 쓰네.. ntol 같은거 대신..
+static uint32_t funcSwap32(uint32_t input)
+{
+    return OSSwapBigToHostInt32(input);
+}
+
+
+// 엔디안 변경하는 함수 인듯.. 
+// little endia 을 Host의 엔디안에 맞추어 변경
+// 아무것도 안할듯 그래서 NO?
+static uint32_t funcNoSwap32(uint32_t input)
+{
+    return OSSwapLittleToHostInt32(input); // host도 little이면 아무것도 안하나? => 그래야 로직상 맞음.
+}
+
+// 1) https://opensource.apple.com/source/Security/Security-55179.1/libsecurity_codesigning/lib/cscdefs.h
+// 1) https://opensource.apple.com/source/Security/Security-55179.1/libsecurity_codesigning/lib/StaticCode.cpp.auto.html
+// 2) https://opensource.apple.com/source/libsecurity_codesigning/libsecurity_codesigning-55032/lib/SecTask.c
+// 2) https://opensource.apple.com/source/libsecurity_codesigning/libsecurity_codesigning-55032/lib/CSCommonPriv.h
+// 2) https://blog.umangis.me/a-deep-dive-into-ios-code-signing/
+// 1,2랑 차이가 좀 있네? 일딴 enum에서.. 무슨 차이지? 1,2가?
+
+
+/*
+ * Magic numbers used by Code Signing 
+ * for what?
+ * 이부분 왜 2랑 차이 있는거지??? 010도 2던데..
+ * https://blog.umangis.me/a-deep-dive-into-ios-code-signing/ 내용이 이거 같기도 하고.. 
+ * 이게 blob type이라는 가정하에.. 아마 맞는듯한데..
+ */
+enum {
+    kSecCodeMagicRequirement = 0xfade0c00,       /* single requirement */
+    kSecCodeMagicRequirementSet = 0xfade0c01,    /* requirement set */
+    kSecCodeMagicCodeDirectory = 0xfade0c02,     /* CodeDirectory */
+    kSecCodeMagicEmbeddedSignature = 0xfade0cc0, /* single-architecture embedded signature */
+    kSecCodeMagicDetachedSignature = 0xfade0cc1, /* detached multi-architecture signature */
+    kSecCodeMagicEntitlement = 0xfade7171,       /* entitlement blob */ //위 링크랑은 다르게 추가된 부분 ( 내 binary도 이거 있긴함 .)
+    
+    kSecCodeMagicByte = 0xfa                     /* shared first byte */
+};
+
+
+/*
+ * Structure of an embedded-signature SuperBlob
+ * LC_SIGNATURE의 offset 따라가면 만나는게 super blob 이므로 이걸 parsing 하기 위한 struct 인듯 ( line에는 super blob 얘기 없음 )
+ */
+typedef struct __BlobIndex {
+    uint32_t type;                  /* type of entry */
+    uint32_t offset;                /* offset of entry */
+} CS_BlobIndex;
+
+typedef struct __Blob {
+    uint32_t magic;                 /* magic number */
+    uint32_t length;                /* total length of SuperBlob */ // blob의 크기를 말함 ( magic 및 length도 포함)
+} CS_Blob;
+
+typedef struct __SuperBlob {
+    CS_Blob blob; // 이부분이 2에서는 magic, length로 풀어서 나와 있다. ( 010도 그러하다.. ) 
+    // 아 CS_Blob 이용하는 형태가 그거랑 같네.. ELF section쪽이랑.. (dex인가? 기억이 애매하네.. )
+    uint32_t count;                  /* number of index entries following */
+    CS_BlobIndex index[];            /* (count) entries */
+    /* followed by Blobs in no particular order as indicated by offsets in index */
+} CS_SuperBlob;
+
+
+/*
+ * C form of a CodeDirectory.
+ */
+typedef struct __CodeDirectory {
+    uint32_t magic;                 /* magic number (CSMAGIC_CODEDIRECTORY) */
+    uint32_t length;                /* total length of CodeDirectory blob */
+    uint32_t version;               /* compatibility version */
+    uint32_t flags;                 /* setup and mode flags */
+    uint32_t hashOffset;            /* offset of hash slot element at index zero */
+    uint32_t identOffset;           /* offset of identifier string */
+    uint32_t nSpecialSlots;         /* number of special hash slots */
+    uint32_t nCodeSlots;            /* number of ordinary (code) hash slots */
+    uint32_t codeLimit;             /* limit to main image signature range */
+    uint8_t hashSize;               /* size of each hash in bytes */
+    uint8_t hashType;               /* type of hash (cdHashType* constants) */
+    uint8_t spare1;                 /* unused (must be zero) */
+    uint8_t    pageSize;            /* log2(page size in bytes); 0 => infinite */
+    uint32_t spare2;                /* unused (must be zero) */
+    /* followed by dynamic content as located by offset fields above */
+} CS_CodeDirectory;
+
+
+/*
+* [*] 핵심 point 
+* buffer : siganture blob의 data offset
+* size : data size. 
+* 결국 pkcs7/cms parsing 하는게 주된 골자. ( cms는 pkcs7에 나온 가이드)
+*/
+int parsePKCS7(const unsigned char* buffer, size_t size)
+{
+    int result = 0;
+    PKCS7* pkcs7 = NULL;
+    STACK_OF(X509)* signers = NULL; // why? X.509?
+    
+    pkcs7 = d2i_PKCS7(NULL, &buffer, size);
+    if (pkcs7 == NULL)
+    {
+        goto error;
+    }
+    
+    if (!PKCS7_type_is_signed(pkcs7))
+    {
+        goto error;
+    }
+    
+    signers = PKCS7_get0_signers(pkcs7, NULL, PKCS7_BINARY);
+    if (signers == NULL)
+    {
+        goto error;
+    }
+    
+    const X509* cert = sk_X509_pop(signers);
+    if (cert == NULL)
+    {
+        goto error;
+    }
+    
+    printf("Signer name: %s\n", cert->name);
+    printf("Signature length: %d, signature: ", cert->cert_info->key->public_key->length);
+    
+    for (int i = 0; i < cert->cert_info->key->public_key->length; i++)
+    {
+        printf("0x%02x, ", cert->cert_info->key->public_key->data[i]);
+    }
+    printf("\n");
+    
+    if (memcmp(PUBLIC_KEY, cert->cert_info->key->public_key->data, cert->cert_info->key->public_key->length) == 0)
+    {
+        printf("The same\n");
+        result = 1;
+    }
+    else
+    {
+        printf("Not the same\n");
+        result = 0;
+    }
+    
+error:
+    if (signers) sk_X509_free(signers);
+    if (pkcs7) PKCS7_free(pkcs7);
+    
+    return result;
+}
+
+/*
+loadcommand parsing한결과가 param으로 넘어감. 
+buffer : 시그니쳐 시작 위치 ( superblob 위치가 되죠)
+size : 사이즈 
+*/
+int parseSignature(const char* buffer, size_t size)
+{
+    printf("Signature\n");
+    
+    CS_SuperBlob* sb = (CS_SuperBlob*)buffer;
+    //OSSwapBigToHostInt32 한번 뒤집어 줘야 한다. 값을 ( filre에 fade0cc0 순으로 들어가 있음)
+    // 슈퍼블롭이 맞는지 체크하는것.
+    if (OSSwapBigToHostInt32(sb->blob.magic) != kSecCodeMagicEmbeddedSignature) // 0xfade0cc0 ( 같음 010이랑.)
+    {
+        return 0;
+    }
+    
+    uint32_t count = OSSwapBigToHostInt32(sb->count); // blob의 index갯수
+    
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        uint32_t offset = OSSwapBigToHostInt32(sb->index[i].offset); 
+         
+        const CS_Blob* blob = (const CS_Blob*)(buffer + offset); // index에 해당하는 blob 위치 찾음, 010에서는 buffer+offset까지 자동으로 구해주네 ㅎ
+        
+        if (OSSwapBigToHostInt32(blob->magic) == 0xfade0b01) // signature (blobwrapper signature네..)
+        {
+            printf("Embedded signature, length: %d\n", OSSwapBigToHostInt32(blob->length));
+            
+            if (OSSwapBigToHostInt32(blob->length) != 8) // length가 8이면 signature data가 없는 형태 인가봄
+            {
+                // data 영역 offset 계산 +8은 magic + length // buffer는 codesignature 시작 위치 + offset은 blobwrapper위치 
+                // 사실 CS_Blob type 변수 이용해서 해도 될거 같긴한데.. const라 값변화 안되서 그러나? 
+                const unsigned char* message = (const unsigned char*)buffer + offset + 8;
+                
+                // message는 010에서 data[] 임. 
+                // 그리고 2번째 param은 실제 data[] 만의 size
+                if (parsePKCS7(message, (OSSwapBigToHostInt32(blob->length) - 8)) == 0)
+                {
+                    return 0;
+                }
+            }
+        }
+    }
+    
+    return 1;
+}
+
+/*
+* fat 아닌 경우.
+* 
+*/
+int parseArch(const char* buffer, size_t size)
+{
+    printf("Arch\n");
+    
+    uint32_t (*swap32)(uint32_t) = funcNoSwap32; // function pointer 정의 => ntohl 대신 쓰려고.
+    
+    uint32_t offset = 0;
+    
+    const struct mach_header* header = (struct mach_header*)(buffer + offset); // offset은 0부터 시작하니까 이게 맞음.
+    
+    switch (header->magic)
+    {
+        // magic 보고 endian 맞추어 file 읽기 위함. 
+        case MH_CIGAM:
+            swap32 = funcSwap32; // 근데 짜피  funcSwap32나 funcNoSwap32 나 같은 기능일텐데..
+        case MH_MAGIC: // 이게 일반적인 경우임. 
+            offset += sizeof(struct mach_header); // 아마 offset은 loadcommand 위치 일듯.
+            break;
+        case MH_CIGAM_64:
+            swap32 = funcSwap32;
+        case MH_MAGIC_64:
+            offset += sizeof(struct mach_header_64);
+            break;
+        default:
+            return 0;
+    }
+    
+    //TODO: remove => powerpc 용인가봄..
+    // const NXArchInfo *archInfo = NXGetArchInfoFromCpuType(swap32(header->cputype), swap32(header->cpusubtype));
+    // if (archInfo != NULL)
+    // {
+    //     printf("Architecture: %s\n", archInfo->name);
+    // }
+    
+
+    uint32_t commandCount = swap32(header->ncmds); // uint32로 읽음 ( file에선 역순 저장 이었으니까, swap 없이 맞음.)
+    
+
+    // loadcommand 돌면서 CODE_SIGNATURE 찾아서 처리.
+    for (uint32_t i = 0; i < commandCount; i++)
+    {
+        const struct load_command* loadCommand = (const struct load_command*)(buffer + offset);
+        uint32_t commandSize = swap32(loadCommand->cmdsize);
+        
+        uint32_t commandType = swap32(loadCommand->cmd);
+        if (commandType == LC_CODE_SIGNATURE)
+        {
+            const struct linkedit_data_command* dataCommand = (const struct linkedit_data_command*)(buffer + offset);
+            uint32_t dataOffset = swap32(dataCommand->dataoff);
+            uint32_t dataSize = swap32(dataCommand->datasize);
+            
+            return parseSignature(buffer + dataOffset, dataSize); //offset은 file 시작 위치가  base인가봄.
+        }
+        
+        offset += commandSize;
+    }
+
+
+    printf("Signature not found\n");
+
+    return 0;
+}
+
+int parseFat(const char* buffer, size_t size)
+{
+    printf("FAT\n");
+    
+    size_t offset = 0;
+    
+    const struct fat_header* fatHeader = (const struct fat_header*)(buffer + offset);
+    offset += sizeof(*fatHeader);
+    
+    uint32_t archCount = OSSwapBigToHostInt32(fatHeader->nfat_arch);
+    
+    printf("Arch count: %d\n", archCount);
+    
+    for (uint32_t i = 0; i < archCount; i++)
+    {
+        const struct fat_arch* arch = (const struct fat_arch*)(buffer + offset);
+        offset += sizeof(*arch);
+        
+        uint32_t archOffset = OSSwapBigToHostInt32(arch->offset);
+        uint32_t archSize = OSSwapBigToHostInt32(arch->size);
+        
+        if (!parseArch(buffer + archOffset, archSize))
+        {
+            return 0;
+        }
+    }
+    
+    return 1;
+}
+
+/*
+*  buffer : binary pointer
+*  size : binarysize
+*/
+int parseMachO(const char* buffer, size_t size)
+{
+    const uint32_t* magic = (const uint32_t*)buffer;
+    
+    if (*magic == FAT_CIGAM ||
+        *magic == FAT_MAGIC)
+    {
+        return parseFat(buffer, size);
+    }
+    else
+    {
+        return parseArch(buffer, size);
+    }
+}
+
+// file 기반 check. 
+int checkSignature(const char* filename)
+{
+    int result = 0;
+    char* buffer = NULL;
+    
+    int fd = open(filename, O_RDONLY);
+    
+    if (fd == -1)
+    {
+        goto error;
+    }
+    
+    struct stat st;
+    fstat(fd, &st);
+    
+    // mmap으로 file 읽기를 진행하네.. 이게 나은가봄.. pointer로 제어 가능하니까
+    // mmap으로 memory mapping도 하던데.. 그땐fd 없었나?
+    buffer = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
+    
+    if (buffer == MAP_FAILED)
+    {
+        goto error;
+    }
+    
+    printf("File opened\n");
+    
+    // result가 signuature check 결과
+    result = parseMachO(buffer, (size_t)st.st_size);
+    
+error:
+    if (buffer) munmap(buffer, (size_t)st.st_size);
+    if (fd != -1) close(fd);
+    
+    return result;
+}
+
+int main(int argc, const char * argv[])
+{
+    if (argc > 0 && checkSignature(argv[0]))
+    {
+        printf("OK\n");
+    }
+    
+    return 0;
+}
+
