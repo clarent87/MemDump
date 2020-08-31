@@ -171,6 +171,7 @@ int detach_process(pid_t pid) {
 pid는 pid
 segments는 segment array
 segment_size 는 어레이 받았으니까, size 도 받음. 
+로직상 해당모듈의 segment 전부 합친 end를 계산함.  
 
 TODO : 연속되지 않을 수도 있으니 수정 ? 짜피 offset으로 작업하는게 좋을듯
 */
