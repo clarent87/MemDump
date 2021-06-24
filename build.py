@@ -56,6 +56,8 @@ def push(memdump):
     abi = ret.split(":", 1)[1][2:-2]
     if abi.startswith("x86"):
         os.system("adb push libs/x86/%s /data/local/tmp/" % memdump)
+    elif abti.startswith("arm64"):
+        os.system("adb push libs/arm64-v8a/%s /data/local/tmp/" % memdump)    
     elif abi.startswith("arm"):
         os.system("adb push libs/armeabi-v7a/%s /data/local/tmp/" % memdump)
     os.system("adb shell su -c 'chmod 777 /data/local/tmp/%s'" % memdump)
@@ -63,7 +65,7 @@ def push(memdump):
 
 def build():
     print("[+] Build memory dump script...")
-    os.system("ndk-build -B APP_ABI=armeabi-v7a")
+    os.system("ndk-build -B APP_ABI='armeabi-v7a arm64-v8a x86'")
 
 
 def run(memdump, options):
