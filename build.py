@@ -56,7 +56,7 @@ def push(memdump):
     abi = ret.split(":", 1)[1][2:-2]
     if abi.startswith("x86"):
         os.system("adb push libs/x86/%s /data/local/tmp/" % memdump)
-    elif abti.startswith("arm64"):
+    elif abi.startswith("arm64"):
         os.system("adb push libs/arm64-v8a/%s /data/local/tmp/" % memdump)    
     elif abi.startswith("arm"):
         os.system("adb push libs/armeabi-v7a/%s /data/local/tmp/" % memdump)
